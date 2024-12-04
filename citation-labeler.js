@@ -1,75 +1,78 @@
-// Get the currently selected items in the Zotero Pane
-var selectedItems = Zotero.getActiveZoteroPane().getSelectedItems();
+// This script takes the first author letters and the last 2 digits from the year and outputs it into the extra field as the citation-label to use with CSL citation styles in Zotero.
+(async () => {
+    var items = Zotero.getActiveZoteroPane().getSelectedItems();
+    if (!items.length) {
+        window.alert("No items selected.");
+        return;
+    }
 
-// Track how many items were processed and how many were overwritten
-var processedCount = 0;
-var overwrittenCount = 0;
-var itemsWithCitationLabel = [];
+    var existingLabels = 0;
+    var skippedItems = 0;
+    var updatedItems = 0;
 
-// First, gather the items that already have a citation label
-for (let item of selectedItems) {
-    if (item.isRegularItem()) {
-        let extraField = item.getField('extra') || "";
-        if (extraField.includes("citation-label:")) {
-            itemsWithCitationLabel.push(item);
+
+    items.forEach(item => {
+        var extraField = item.getField('extra');
+        if (extraField && extraField.includes('citation-label')) {
+            existingLabels++;
         }
+    });
+
+    // Prompt for overwrite if necessary
+    var overwrite = true;
+    if (existingLabels > 0) {
+        overwrite = window.confirm(
+            `${existingLabels} items already have a citation-label. Do you want to overwrite them?`
+        );
     }
-}
 
-// Ask user if they want to overwrite citation-labels for items that already have one
-if (itemsWithCitationLabel.length > 0) {
-    var overwrite = window.confirm("There are " + itemsWithCitationLabel.length + " items that already have a citation label. Do you want to overwrite them?");
-    if (!overwrite) {
-        // If user chooses not to overwrite, just process items without citation-labels
-        itemsWithCitationLabel = [];
-    }
-}
+    // Process items
+    for (let item of items) {
+        var extraField = item.getField('extra');
+        if (extraField && extraField.includes('citation-label')) {
+            if (!overwrite) continue; // Skip if overwrite not confirmed
+        }
 
-// Process the selected items
-for (let item of selectedItems) {
-    if (item.isRegularItem()) {
-        // Get the creators of the item
-        let creators = item.getCreators();
-        // Get the year of the item
-        let year = item.getField('date');
-
-        if (creators.length > 0 && creators[0].lastName) {
-            // Extract the first author's last name
-            let lastName = creators[0].lastName.toUpperCase();
-            // Extract the first three letters of the last name
-            let citationName = lastName.substring(0, 3);
-
-            // Extract the last two digits of the year
-            let yearDigits = year ? year.slice(-2) : "??";
-
-            // Generate the citation label
-            let citationLabel = citationName + yearDigits;
-
-            // Construct the citation-label entry
-            let citationLabelEntry = "citation-label: " + citationLabel;
-
-            // Get the existing value of the Extra field
-            let extraField = item.getField('extra') || "";
-
-            // Check if a citation-label already exists in the Extra field
-            if (!extraField.includes("citation-label:")) {
-                // Append the citation-label to the Extra field
-                extraField = citationLabelEntry + "\n" + extraField;
-                item.setField('extra', extraField.trim());
-                // Save changes to the database immediately
-                await item.saveTx();
-                processedCount++;
-            } else if (itemsWithCitationLabel.includes(item)) {
-                // If the item was selected for overwrite
-                extraField = citationLabelEntry + "\n" + extraField.replace(/citation-label:.*\n?/g, '');
-                item.setField('extra', extraField.trim());
-                await item.saveTx();
-                overwrittenCount++;
+        var date = item.getField('date', false, true);
+        var yearLastTwoDigits = '';
+        if (date) {
+            var parsedDate = Zotero.Date.strToDate(date);
+            if (parsedDate.year) {
+                yearLastTwoDigits = parsedDate.year.toString().slice(-2); // Extract last 2 digits of the year
             }
         }
-    }
-}
 
-// Confirm the operation
-window.alert(processedCount + " items were given a citation label." + 
-    (overwrittenCount > 0 ? " " + overwrittenCount + " items had their citation label overwritten." : ""));
+        if (!yearLastTwoDigits) {
+            skippedItems++;
+            continue; // Skip items without a valid year
+        }
+
+        var authors = item.getCreators();
+        if (!authors || authors.length === 0) {
+            skippedItems++;
+            continue; // Skip items without authors
+        }
+
+        var lastName = authors[0].lastName.toUpperCase();
+        var citationLabel = `${lastName.slice(0, 3)}${yearLastTwoDigits}`;
+
+        // Prepend to the Extra field
+        extraField = (extraField || '').replace(/^/, `citation-label: ${citationLabel}\n`);
+        item.setField('extra', extraField);
+        updatedItems++;
+    }
+
+    // Save changes
+    await Zotero.DB.executeTransaction(async () => {
+        for (let item of items) {
+            await item.saveTx();
+        }
+    });
+
+    // Summary alert
+    window.alert(
+        `${updatedItems} items were given a citation label.\n` +
+        `${skippedItems} items were skipped.\n` +
+        `${existingLabels} existing citation-labels were ${overwrite ? 'overwritten' : 'not overwritten'}.`
+    );
+})();
